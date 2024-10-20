@@ -1,3 +1,11 @@
+'''
+与FedAvg-normal相比 FedAvg-dataAvg的区别在于:
+客户端数据分配更加均匀 每个客户端的数据量更加接近
+在FedAvg-normal中: 每个客户端的数据量是随机分配的
+如果客户端数量较少 可能会导致最后一个客户端的数据量过大
+但是在这种情况下 能够模拟数据量倾斜极端情况 更好地验证算法的鲁棒性
+所以在实际应用中 可以根据实际情况选择FedAvg-normal或FedAvg-dataAvg
+'''
 # 引入所需的库
 import torch    # 引入torch库
 import torch.utils.data # 引入torch.utils.data库，用于数据集加载和预处理
@@ -134,9 +142,20 @@ def split_dataset_randomly(dataset, num_clients):
     indices = list(range(data_size))
     random.shuffle(indices)  # 随机打乱索引
 
-    # 随机生成每个客户端的数据集大小
-    client_data_sizes = [random.randint(1, data_size // num_clients) for _ in range(num_clients)]
-    client_data_sizes[-1] = data_size - sum(client_data_sizes[:-1])  # 确保总大小一致
+    # 计算每个客户端应分配的平均数据量
+    avg_size = data_size // num_clients
+    client_data_sizes = [avg_size] * num_clients
+
+    # 在平均数据量的基础上，添加一定的随机性
+    for i in range(data_size % num_clients):
+        client_data_sizes[i] += 1  # 分配剩余的数据
+
+    # 确保每个客户端的数据量在一定范围内波动
+    for i in range(num_clients):
+        if i < num_clients - 1:
+            fluctuation = random.randint(-avg_size // 2, avg_size // 2)
+            client_data_sizes[i] += fluctuation
+            client_data_sizes[-1] -= fluctuation
 
     client_datasets = []
     start_idx = 0
@@ -173,7 +192,7 @@ def get_dataset(dir, name, num_clients):
     return client_train_datasets, eval_dataset
 
 # 开始训练
-with open("conf_avg.json",'r') as f:
+with open("./config-json/avg_conf.json",'r') as f:
     conf = json.load(f) # 读取配置文件
 
 # 加载预训练的 ResNet18 模型
@@ -227,7 +246,6 @@ for e in range(conf["global_epochs"]):
 
 # 保存模型
 torch.save(server.global_model.state_dict(),".ResNet18_mnist.pth")
-
 # 绘制准确率和损失曲线
 import matplotlib.pyplot as plt
 plt.figure()

@@ -134,20 +134,9 @@ def split_dataset_randomly(dataset, num_clients):
     indices = list(range(data_size))
     random.shuffle(indices)  # 随机打乱索引
 
-    # 计算每个客户端应分配的平均数据量
-    avg_size = data_size // num_clients
-    client_data_sizes = [avg_size] * num_clients
-
-    # 在平均数据量的基础上，添加一定的随机性
-    for i in range(data_size % num_clients):
-        client_data_sizes[i] += 1  # 分配剩余的数据
-
-    # 确保每个客户端的数据量在一定范围内波动
-    for i in range(num_clients):
-        if i < num_clients - 1:
-            fluctuation = random.randint(-avg_size // 2, avg_size // 2)
-            client_data_sizes[i] += fluctuation
-            client_data_sizes[-1] -= fluctuation
+    # 随机生成每个客户端的数据集大小
+    client_data_sizes = [random.randint(1, data_size // num_clients) for _ in range(num_clients)]
+    client_data_sizes[-1] = data_size - sum(client_data_sizes[:-1])  # 确保总大小一致
 
     client_datasets = []
     start_idx = 0
@@ -184,7 +173,7 @@ def get_dataset(dir, name, num_clients):
     return client_train_datasets, eval_dataset
 
 # 开始训练
-with open("conf_avg.json",'r') as f:
+with open("./config-json/avg_conf.json",'r') as f:
     conf = json.load(f) # 读取配置文件
 
 # 加载预训练的 ResNet18 模型
@@ -238,6 +227,7 @@ for e in range(conf["global_epochs"]):
 
 # 保存模型
 torch.save(server.global_model.state_dict(),".ResNet18_mnist.pth")
+
 # 绘制准确率和损失曲线
 import matplotlib.pyplot as plt
 plt.figure()

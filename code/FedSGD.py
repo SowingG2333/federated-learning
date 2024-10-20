@@ -133,7 +133,7 @@ def get_dataset(dir, name):
     return train_dataset, eval_dataset
 
 # 开始训练
-with open("conf.json",'r') as f:
+with open("./config-json/conf.json",'r') as f:
     conf = json.load(f) # 读取配置文件
 
 # 分别定义一个服务端对象和多个客户端对象，用来模拟横向联邦训练场景
