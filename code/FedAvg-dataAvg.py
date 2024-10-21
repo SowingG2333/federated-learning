@@ -20,7 +20,7 @@ import random # 引入random库，用于生成随机数
 
 # 定义client类
 class Client:
-    def __init__(self, conf, global_model, init_model, train_dataset, id=1):
+    def __init__(self, conf, local_model, train_dataset, id):
         self.conf = conf    # 客户端的配置
         
         if torch.cuda.is_available():   # 判断是否有cuda设备
@@ -28,8 +28,7 @@ class Client:
         else:
             self.device = torch.device("cpu")   # 选择客户端的设备
 
-        self.local_model = init_model.to(self.device)    # 客户端的模型
-        self.global_model = global_model.to(self.device)   # 获取全局模型
+        self.local_model = local_model.to(self.device)   # 获取全局模型
 
         self.train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -49,11 +48,7 @@ class Client:
         return self.data_size    # 返回数据集大小
 
     # 定义客户端的训练函数
-    def local_train(self, model):
-        for name, param in model.state_dict().items():
-            # 客户端的模型首先使用server下放的模型进行参数更新
-            self.local_model.state_dict()[name].copy_(param.clone())
-
+    def local_train(self):
         # 定义优化器
         optimizer = torch.optim.SGD(
             self.local_model.parameters(),
@@ -70,25 +65,25 @@ class Client:
                 loss = torch.nn.functional.cross_entropy(output, target)    # 使用交叉熵损失函数
                 loss.backward() # 反向传播
                 optimizer.step()    # 优化器更新参数
-            print(f'client {self.client_id} local epoch {epoch} done')   # 打印client的训练轮数
+            print(f'client {self.client_id} local epoch {epoch + 1} done')   # 打印client的训练轮数
         for name, param in self.local_model.state_dict().items():
             self.param[name] = param.clone()    # 将本地训练后的模型参数存储到param字典中
         return self.param   # 返回参数和数据集大小
     
 # 定义server类
 class Server:
-    def __init__(self, conf, init_model, eval_datasets):
+    def __init__(self, conf, global_model, eval_datasets):
         self.conf = conf    # 服务器的配置
-        # 配置服务器端的模型
-        self.global_model = init_model
-        # Server类中的global_model需要被移到device上
 
+        # 判断是否有cuda设备
         if torch.cuda.is_available():
             self.device = torch.device("cuda:0")
         else:
             self.device = torch.device("cpu")   # 选择服务器的设备
 
-        self.global_model = init_model.to(self.device)   # 获取全局模型
+        # 配置服务器端的模型
+        self.global_model = global_model.to(self.device)
+
         self.eval_dataloader = torch.utils.data.DataLoader(
             eval_datasets,
             batch_size=self.conf['batch_size'],
@@ -98,7 +93,7 @@ class Server:
     
     # 定义服务器端的模型聚合函数
     def model_aggregate(self, weight_accumulator):
-        for i, (name, data) in enumerate(self.global_model.state_dict().items()):
+        for name, data in self.global_model.state_dict().items():
             # 服务器端的模型参数更新
             update_per_layer = weight_accumulator[name]
             # 进行参数数据类型兼容处理：如果数据类型不匹配，则将update_per_layer转换为data的数据类型
@@ -115,7 +110,7 @@ class Server:
         data_size = 0   # 初始化数据集大小
 
         # 评估模型
-        for batch_id, batch in enumerate(self.eval_dataloader):
+        for batch in self.eval_dataloader:
             data, target = batch    # 获取数据和标签
             data, target = data.to(self.device), target.to(self.device) # 将数据和标签移动到设备上(容易忽略)
             output = self.global_model(data)    # 模型前向传播
@@ -128,6 +123,7 @@ class Server:
         loss_avg = total_loss / data_size
         self.loss_history.append(loss_avg)  # 将损失添加到历史损失中
         accuracy = 100 * correct / data_size
+        self.accuracy_history.append(accuracy) # 将准确率添加到历史准确率中
         return accuracy, loss_avg    # 返回准确率和损失
 
 # 定义数据拆分函数
@@ -196,20 +192,20 @@ with open("./config-json/avg_conf.json",'r') as f:
     conf = json.load(f) # 读取配置文件
 
 # 加载预训练的 ResNet18 模型
-init_model = models.resnet18(pretrained=True)
+model = models.resnet18(pretrained=True)
 
 # 修改第一层卷积层，使其接受1个通道的输入
-init_model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
 # 分别定义一个服务端对象和多个客户端对象，用来模拟横向联邦训练场景
 train_datasets,eval_datasets = get_dataset("./data/",conf["type"],conf["no_models"])
-server = Server(conf,init_model,eval_datasets)
+server = Server(conf, model, eval_datasets)
 clients = []
 client_data_sizes = []
 
 # 创建多个客户端
 for c in range(conf["no_models"]):
-    clients.append(Client(conf,server.global_model,init_model,train_datasets[c],c))
+    clients.append(Client(conf, model, train_datasets[c], c+1))
     data_size = clients[c].get_data_size()
     client_data_sizes.append(data_size)
 
@@ -228,10 +224,11 @@ for e in range(conf["global_epochs"]):
     for name,params in server.global_model.state_dict().items():
         # 在指定设备上创建并初始化weight_accumulator中的张量
         weight_accumulator[name] = torch.zeros_like(params).to(device)
-
+    
+    # 客户端本地训练后将参数聚合并更新全局模型
     for c in candidates:
         # 确保本地训练后的模型差异在正确设备上
-        diff = c.local_train(server.global_model)
+        diff = c.local_train()
         for name,params in server.global_model.state_dict().items():
                 data_weight = c.data_size / sum(client_data_sizes)
                 diff[name] = diff[name] * data_weight
@@ -240,12 +237,22 @@ for e in range(conf["global_epochs"]):
                 else:
                     weight_accumulator[name].add_(diff[name] * c.data_size / sum(client_data_sizes))
 
+    # 调用模型聚合函数来更新全局模型
     server.model_aggregate(weight_accumulator)
-    acc,loss = server.model_evaluate()
-    print(f'global epoch {e} done, accuracy: {acc}, loss: {loss}')
+
+    # 将聚合后的全局模型参数传回客户端
+    for c in clients:
+        for name, param in server.global_model.state_dict().items():
+            # 客户端的模型首先使用server下放的模型进行参数更新
+            c.local_model.state_dict()[name].copy_(param.clone())
+
+    acc,loss = server.model_evaluate()  # 评估全局模型
+    print(f'global epoch {e + 1} done, accuracy: {acc}, loss: {loss}') # 打印全局模型的准确率和损失
+    print('-----------------------------------')
 
 # 保存模型
 torch.save(server.global_model.state_dict(),".ResNet18_mnist.pth")
+
 # 绘制准确率和损失曲线
 import matplotlib.pyplot as plt
 plt.figure()
