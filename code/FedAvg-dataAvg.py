@@ -123,7 +123,7 @@ class Server:
         loss_avg = total_loss / data_size
         self.loss_history.append(loss_avg)  # 将损失添加到历史损失中
         accuracy = 100 * correct / data_size
-        self.accuracy_history.append(accuracy) # 将准确率添加到历史准确率中
+        self.accuracy_history.append(accuracy.item()) # 将准确率添加到历史准确率中
         return accuracy, loss_avg    # 返回准确率和损失
 
 # 定义数据拆分函数
@@ -167,8 +167,8 @@ def split_dataset_randomly(dataset, num_clients):
 # 定义数据集加载函数
 def get_dataset(dir, name, num_clients):
     if name == 'mnist':
-        train_dataset = datasets.MNIST(dir, train=True, download=True,transform=transforms.ToTensor())
-        eval_dataset = datasets.MNIST(dir, train=False, transform=transforms.ToTensor())
+        train_dataset = datasets.MNIST(root='./data', train=True, download=True,transform=transforms.ToTensor())
+        eval_dataset = datasets.MNIST(root='./data', train=False, transform=transforms.ToTensor())
     elif name=='cifar':
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -192,7 +192,8 @@ with open("./config-json/avg_conf.json",'r') as f:
     conf = json.load(f) # 读取配置文件
 
 # 加载预训练的 ResNet18 模型
-model = models.resnet18(pretrained=True)
+from torchvision.models import ResNet18_Weights
+model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
 
 # 修改第一层卷积层，使其接受1个通道的输入
 model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -202,6 +203,16 @@ train_datasets,eval_datasets = get_dataset("./data/",conf["type"],conf["no_model
 server = Server(conf, model, eval_datasets)
 clients = []
 client_data_sizes = []
+
+# 判断是否有cuda设备
+if torch.cuda.is_available():
+    print("-----------------")
+    print("cuda is available")
+    print("-----------------")
+else: 
+    print("-----------------")
+    print("cuda is not available, use cpu")
+    print("-----------------")
 
 # 创建多个客户端
 for c in range(conf["no_models"]):
@@ -255,16 +266,23 @@ torch.save(server.global_model.state_dict(),".ResNet18_mnist.pth")
 
 # 绘制准确率和损失曲线
 import matplotlib.pyplot as plt
+
+loss_history = server.loss_history
+accuracy_history = server.accuracy_history
+
+# 绘制损失曲线
 plt.figure()
-plt.plot(server.accuracy_history)
-plt.xlabel('Global Epoch')
-plt.ylabel('Accuracy')
-plt.title('Global Model Accuracy')
-plt.savefig('./accuracy.jpg')
-plt.figure()
-plt.plot(server.loss_history)
-plt.xlabel('Global Epoch')
+plt.plot(loss_history)
+plt.title('Loss History')
+plt.xlabel('Epoch')
 plt.ylabel('Loss')
-plt.title('Global Model Loss')
-plt.savefig('./loss.jpg')
+plt.savefig('./Loss History.jpg')
+
+# 绘制准确率曲线
+plt.figure()
+plt.plot(accuracy_history)
+plt.title('Accuracy History')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.savefig('./Accuracy History.jpg')
 plt.show()
